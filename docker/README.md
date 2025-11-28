@@ -4778,3 +4778,3073 @@ docker run -d \
   -p 80:80 \
   nginx
 ```
+
+**Testing Container Communication:**
+
+```bash
+# Create network and containers
+docker network create test-network
+docker run -d --name container1 --network test-network alpine sleep 1000
+docker run -d --name container2 --network test-network alpine sleep 1000
+
+# Test communication from container1 to container2
+docker exec container1 ping container2
+# Should work! DNS resolves container2's name
+
+# Test from container2 to container1
+docker exec container2 ping container1
+# Works both ways!
+```
+
+**Real-world Multi-tier Application:**
+
+```bash
+#!/bin/bash
+# setup-app-network.sh
+
+echo "🌐 Setting up application network..."
+
+# Create networks
+docker network create frontend-net
+docker network create backend-net
+
+echo "🗄️  Starting database..."
+docker run -d \
+  --name postgres-db \
+  --network backend-net \
+  -e POSTGRES_PASSWORD=secret123 \
+  -e POSTGRES_DB=myapp \
+  -v pgdata:/var/lib/postgresql/data \
+  postgres:14
+
+echo "📦 Starting Redis cache..."
+docker run -d \
+  --name redis-cache \
+  --network backend-net \
+  redis:alpine
+
+echo "🚀 Starting API server..."
+docker run -d \
+  --name api-server \
+  --network backend-net \
+  -e DB_HOST=postgres-db \
+  -e REDIS_HOST=redis-cache \
+  myapp:api
+
+# Connect API to frontend network too
+docker network connect frontend-net api-server
+
+echo "🌐 Starting web server..."
+docker run -d \
+  --name web-server \
+  --network frontend-net \
+  -p 80:80 \
+  -e API_URL=http://api-server:8080 \
+  myapp:frontend
+
+echo "✅ Application stack is running!"
+echo "Frontend: http://localhost"
+docker ps
+```
+
+**Network Troubleshooting:**
+
+```bash
+# Check container's network
+docker inspect container-name | grep -A 20 Networks
+
+# Check network details
+docker network inspect network-name
+
+# Test connectivity
+docker exec container1 ping -c 3 container2
+docker exec container1 wget -O- http://container2:8080/health
+docker exec container1 curl http://container2:8080
+
+# Check DNS resolution
+docker exec container1 nslookup container2
+docker exec container1 cat /etc/hosts
+
+# View network traffic
+docker exec container1 netstat -tuln
+```
+
+**Network Aliases:**
+
+```bash
+# Create container with network alias
+docker run -d \
+  --name db1 \
+  --network my-network \
+  --network-alias database \
+  postgres
+
+docker run -d \
+  --name db2 \
+  --network my-network \
+  --network-alias database \
+  postgres
+
+# Both accessible via 'database' hostname
+# Load balanced automatically!
+docker exec api ping database
+```
+
+**Port Publishing vs Network:**
+
+```bash
+# Port publishing (-p) - Host to container
+docker run -d -p 8080:80 nginx
+# Access from host: localhost:8080
+
+# Network - Container to container
+docker network create app-net
+docker run -d --name web --network app-net nginx
+docker run -d --name api --network app-net myapp
+# API can access: http://web:80
+# But host cannot access without -p
+```
+
+---
+
+## Chapter 13: Docker Volumes
+
+### 13.1 Understanding Docker Volumes
+
+**Volume kya hai?**
+Volumes are the preferred way to persist data in Docker containers. Container delete hone ke baad bhi data safe rahta hai.
+
+**Why Volumes?**
+
+- Data persistence
+- Share data between containers
+- Backup and restore
+- Better performance than bind mounts
+- Host-independent
+
+**Volume vs Container Filesystem:**
+
+```
+Container Filesystem (Ephemeral):
+Container Created → Data Stored → Container Deleted → Data Lost ❌
+
+With Volume (Persistent):
+Container Created → Data in Volume → Container Deleted → Data Safe ✅
+```
+
+**Types of Data Storage:**
+
+1. **Volumes** - Managed by Docker (Best)
+2. **Bind Mounts** - Direct host directory
+3. **tmpfs** - Memory only (temporary)
+
+---
+
+### 13.2 Types of Volumes
+
+**Three main types:**
+
+**1. Named Volumes (Recommended):**
+
+```bash
+# Create named volume
+docker volume create my-data
+
+# Use in container
+docker run -d \
+  --name app \
+  -v my-data:/app/data \
+  myapp
+
+# Managed by Docker in: /var/lib/docker/volumes/
+```
+
+**2. Anonymous Volumes:**
+
+```bash
+# Docker creates random name
+docker run -d -v /app/data myapp
+
+# List shows random name
+docker volume ls
+# DRIVER    VOLUME NAME
+# local     abc123def456...
+```
+
+**3. Bind Mounts:**
+
+```bash
+# Mount host directory
+docker run -d \
+  -v /host/path:/container/path \
+  myapp
+
+# Or use --mount (more explicit)
+docker run -d \
+  --mount type=bind,source=/host/path,target=/container/path \
+  myapp
+```
+
+**Comparison:**
+
+| Type | Management | Use Case | Path |
+|------|------------|----------|------|
+| **Named Volume** | Docker | Production, data persistence | Docker managed |
+| **Anonymous Volume** | Docker | Temporary data | Docker managed |
+| **Bind Mount** | User | Development, config files | User specified |
+
+---
+
+### 13.3 Attaching Host Volumes (Bind Mounts)
+
+**Host directory ko mount karo:**
+
+**Basic Bind Mount:**
+
+```bash
+# Mount current directory
+docker run -d \
+  -v $(pwd):/app \
+  myapp
+
+# Mount with read-only
+docker run -d \
+  -v $(pwd):/app:ro \
+  myapp
+
+# Mount specific directory
+docker run -d \
+  -v /home/user/data:/app/data \
+  myapp
+```
+
+**Development Workflow:**
+
+```bash
+# Node.js development with live reload
+docker run -d \
+  --name node-dev \
+  -v $(pwd)/src:/app/src \
+  -v $(pwd)/package.json:/app/package.json \
+  -p 3000:3000 \
+  node:18 \
+  npm run dev
+
+# Changes in ./src reflect immediately!
+```
+
+**Using --mount (Clearer Syntax):**
+
+```bash
+# Bind mount with --mount
+docker run -d \
+  --mount type=bind,source=$(pwd),target=/app \
+  myapp
+
+# Read-only bind mount
+docker run -d \
+  --mount type=bind,source=$(pwd),target=/app,readonly \
+  myapp
+
+# Bind mount with specific options
+docker run -d \
+  --mount type=bind,source=$(pwd),target=/app,consistency=cached \
+  myapp
+```
+
+**Multiple Bind Mounts:**
+
+```bash
+# Mount multiple directories
+docker run -d \
+  --name web-app \
+  -v $(pwd)/src:/app/src \
+  -v $(pwd)/public:/app/public \
+  -v $(pwd)/config:/app/config:ro \
+  -p 3000:3000 \
+  myapp
+```
+
+**Real-world Development Setup:**
+
+```bash
+# Full-stack development
+docker run -d \
+  --name dev-frontend \
+  -v $(pwd)/frontend/src:/app/src \
+  -v $(pwd)/frontend/public:/app/public \
+  -v /app/node_modules \
+  -p 3000:3000 \
+  node:18 \
+  npm start
+
+# Note: -v /app/node_modules prevents overwriting
+# This keeps node_modules from container, not host
+```
+
+**Windows Path Syntax:**
+
+```bash
+# Windows (PowerShell)
+docker run -d -v ${PWD}:/app myapp
+
+# Windows (CMD)
+docker run -d -v %cd%:/app myapp
+
+# Windows (Git Bash)
+docker run -d -v $(pwd):/app myapp
+
+# Windows (Absolute path)
+docker run -d -v C:/Users/username/project:/app myapp
+```
+
+---
+
+### 13.4 Creating and Managing Custom Volumes
+
+**Named volumes create aur manage karo:**
+
+**Create Volume:**
+
+```bash
+# Create volume
+docker volume create my-volume
+
+# Create with driver options
+docker volume create \
+  --driver local \
+  --opt type=none \
+  --opt device=/path/on/host \
+  --opt o=bind \
+  my-volume
+
+# Create with labels
+docker volume create \
+  --label environment=production \
+  --label team=backend \
+  prod-data
+```
+
+**Use Volume:**
+
+```bash
+# Use in container
+docker run -d \
+  --name app \
+  -v my-volume:/app/data \
+  myapp
+
+# Multiple containers can share same volume
+docker run -d --name app1 -v shared-data:/data myapp
+docker run -d --name app2 -v shared-data:/data myapp
+# Both access same data!
+```
+
+**Volume with Database:**
+
+```bash
+# PostgreSQL with persistent data
+docker run -d \
+  --name postgres-db \
+  -v pgdata:/var/lib/postgresql/data \
+  -e POSTGRES_PASSWORD=secret \
+  postgres:14
+
+# Data persists even if container is removed
+docker rm -f postgres-db
+docker run -d \
+  --name postgres-db-new \
+  -v pgdata:/var/lib/postgresql/data \
+  -e POSTGRES_PASSWORD=secret \
+  postgres:14
+# Same data available!
+```
+
+**MongoDB Example:**
+
+```bash
+# Create volume for MongoDB
+docker volume create mongo-data
+
+# Run MongoDB with volume
+docker run -d \
+  --name mongodb \
+  -v mongo-data:/data/db \
+  -p 27017:27017 \
+  -e MONGO_INITDB_ROOT_USERNAME=admin \
+  -e MONGO_INITDB_ROOT_PASSWORD=secret \
+  mongo:6
+
+# Data persists across container restarts
+```
+
+**MySQL Example:**
+
+```bash
+# Create MySQL with persistent data
+docker volume create mysql-data
+
+docker run -d \
+  --name mysql-db \
+  -v mysql-data:/var/lib/mysql \
+  -e MYSQL_ROOT_PASSWORD=rootpass \
+  -e MYSQL_DATABASE=myapp \
+  -e MYSQL_USER=user \
+  -e MYSQL_PASSWORD=pass \
+  -p 3306:3306 \
+  mysql:8
+```
+
+---
+
+### 13.5 Volume Commands
+
+**Volume management commands:**
+
+**List Volumes:**
+
+```bash
+# List all volumes
+docker volume ls
+
+# Filter volumes
+docker volume ls --filter dangling=true
+docker volume ls --filter label=environment=production
+docker volume ls --filter driver=local
+```
+
+**Inspect Volume:**
+
+```bash
+# Detailed information
+docker volume inspect my-volume
+
+# Output (JSON):
+[
+    {
+        "CreatedAt": "2024-01-15T10:30:00Z",
+        "Driver": "local",
+        "Labels": {},
+        "Mountpoint": "/var/lib/docker/volumes/my-volume/_data",
+        "Name": "my-volume",
+        "Options": {},
+        "Scope": "local"
+    }
+]
+
+# Get mountpoint
+docker volume inspect --format '{{.Mountpoint}}' my-volume
+```
+
+**Remove Volume:**
+
+```bash
+# Remove single volume
+docker volume rm my-volume
+
+# Remove multiple volumes
+docker volume rm vol1 vol2 vol3
+
+# Remove all unused volumes
+docker volume prune
+
+# Force prune
+docker volume prune -f
+
+# Prune with filter
+docker volume prune --filter label=temporary=true
+```
+
+**Volume Usage:**
+
+```bash
+# Check which containers use a volume
+docker ps -a --filter volume=my-volume
+
+# Check volume size
+docker system df -v
+
+# Get volume details from container
+docker inspect container-name | grep -A 10 Mounts
+```
+
+**Copy Data to/from Volume:**
+
+```bash
+# Copy data to volume using a temporary container
+docker run --rm \
+  -v my-volume:/data \
+  -v $(pwd):/backup \
+  alpine \
+  cp -r /backup/* /data/
+
+# Copy data from volume
+docker run --rm \
+  -v my-volume:/data \
+  -v $(pwd):/backup \
+  alpine \
+  cp -r /data/* /backup/
+```
+
+---
+
+### 13.6 Backup and Restore Volumes
+
+**Volume ka backup aur restore:**
+
+**Backup Volume:**
+
+```bash
+# Backup volume to tar file
+docker run --rm \
+  -v my-volume:/data \
+  -v $(pwd):/backup \
+  alpine \
+  tar czf /backup/backup.tar.gz -C /data .
+
+# Verify backup
+ls -lh backup.tar.gz
+```
+
+**Restore Volume:**
+
+```bash
+# Create new volume
+docker volume create my-restored-volume
+
+# Restore from backup
+docker run --rm \
+  -v my-restored-volume:/data \
+  -v $(pwd):/backup \
+  alpine \
+  tar xzf /backup/backup.tar.gz -C /data
+```
+
+**Database Backup Script:**
+
+```bash
+#!/bin/bash
+# backup-postgres.sh
+
+VOLUME_NAME="pgdata"
+BACKUP_DIR="./backups"
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/postgres_backup_$DATE.tar.gz"
+
+mkdir -p $BACKUP_DIR
+
+echo "🗄️  Backing up PostgreSQL volume: $VOLUME_NAME"
+
+docker run --rm \
+  -v $VOLUME_NAME:/data \
+  -v $(pwd)/$BACKUP_DIR:/backup \
+  alpine \
+  tar czf /backup/postgres_backup_$DATE.tar.gz -C /data .
+
+echo "✅ Backup completed: $BACKUP_FILE"
+ls -lh $BACKUP_FILE
+```
+
+**Automated Backup with Cron:**
+
+```bash
+# Add to crontab
+# Daily backup at 2 AM
+0 2 * * * /path/to/backup-volumes.sh
+
+# backup-volumes.sh
+#!/bin/bash
+BACKUP_DIR="/backups/docker-volumes"
+DATE=$(date +%Y%m%d)
+
+mkdir -p $BACKUP_DIR
+
+# Backup all important volumes
+for VOLUME in pgdata mongo-data redis-data; do
+    docker run --rm \
+      -v $VOLUME:/data \
+      -v $BACKUP_DIR:/backup \
+      alpine \
+      tar czf /backup/${VOLUME}_${DATE}.tar.gz -C /data .
+done
+
+# Keep only last 7 days
+find $BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
+
+echo "Backup completed: $(date)"
+```
+
+**Restore Script:**
+
+```bash
+#!/bin/bash
+# restore-postgres.sh
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 <backup-file>"
+    exit 1
+fi
+
+BACKUP_FILE=$1
+VOLUME_NAME="pgdata-restored"
+
+echo "🔄 Creating volume: $VOLUME_NAME"
+docker volume create $VOLUME_NAME
+
+echo "📦 Restoring from: $BACKUP_FILE"
+docker run --rm \
+  -v $VOLUME_NAME:/data \
+  -v $(pwd):/backup \
+  alpine \
+  tar xzf /backup/$BACKUP_FILE -C /data
+
+echo "✅ Restore completed!"
+echo "Start container with: docker run -v $VOLUME_NAME:/var/lib/postgresql/data postgres:14"
+```
+
+**Volume Migration:**
+
+```bash
+# Migrate volume between hosts
+
+# Host 1: Export volume
+docker run --rm \
+  -v source-volume:/data \
+  alpine \
+  tar cz -C /data . > volume-backup.tar.gz
+
+# Transfer file to Host 2
+scp volume-backup.tar.gz user@host2:/path/
+
+# Host 2: Import volume
+docker volume create target-volume
+
+cat volume-backup.tar.gz | docker run --rm -i \
+  -v target-volume:/data \
+  alpine \
+  tar xz -C /data
+```
+
+---
+
+## Chapter 14: Docker Compose
+
+### 14.1 What is Docker Compose?
+
+**Docker Compose kya hai?**
+Docker Compose ek tool hai jo multi-container applications ko define aur run karne ke liye use hota hai. YAML file me puri application define karo, ek command se sab kuch start karo!
+
+**Why Docker Compose?**
+
+- Define entire application in one file
+- Start all services with single command
+- Manage complex multi-container apps easily
+- Version control your infrastructure
+- Reproducible environments
+
+**Without Compose vs With Compose:**
+
+```bash
+# ❌ Without Compose (manual)
+docker network create myapp-net
+docker volume create pgdata
+docker run -d --name db --network myapp-net -v pgdata:/var/lib/postgresql/data postgres
+docker run -d --name redis --network myapp-net redis
+docker run -d --name api --network myapp-net -p 8080:8080 myapi
+docker run -d --name web --network myapp-net -p 80:80 myweb
+
+# ✅ With Compose (easy!)
+docker compose up -d
+```
+
+---
+
+### 14.2 Installing Docker Compose
+
+**Docker Compose install karo:**
+
+**Check if Already Installed:**
+
+```bash
+docker compose version
+# Output: Docker Compose version v2.20.2
+```
+
+**Linux Installation:**
+
+```bash
+# Docker Compose v2 (Plugin)
+# Usually comes with Docker Desktop
+
+# If not installed:
+sudo apt-get update
+sudo apt-get install docker-compose-plugin
+
+# Verify
+docker compose version
+```
+
+**Standalone Installation (if needed):**
+
+```bash
+# Download binary
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+
+# Make executable
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Verify
+docker-compose --version
+```
+
+**Note:** Modern Docker includes Compose as a plugin. Use `docker compose` instead of `docker-compose`.
+
+---
+
+### 14.3 Docker Compose File Structure
+
+**docker-compose.yml ka structure:**
+
+**Basic Structure:**
+
+```yaml
+version: '3.8'  # Compose file version
+
+services:  # Define containers
+  service-name:
+    image: image-name
+    ports:
+      - "host:container"
+    environment:
+      - KEY=value
+    volumes:
+      - volume-name:/path
+    networks:
+      - network-name
+
+volumes:  # Define volumes
+  volume-name:
+
+networks:  # Define networks
+  network-name:
+```
+
+**Simple Example:**
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./html:/usr/share/nginx/html
+
+  database:
+    image: postgres:14
+    environment:
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+```
+
+**Start Application:**
+
+```bash
+# Start all services
+docker compose up -d
+
+# View running services
+docker compose ps
+
+# View logs
+docker compose logs
+
+# Stop all services
+docker compose down
+```
+
+---
+
+### 14.4 Docker Compose Commands
+
+**Important Compose commands:**
+
+**Start and Stop:**
+
+```bash
+# Start services
+docker compose up           # Foreground
+docker compose up -d        # Background (detached)
+
+# Start specific service
+docker compose up -d web
+
+# Stop services
+docker compose stop         # Stop without removing
+docker compose down         # Stop and remove containers
+docker compose down -v      # Stop and remove volumes too
+```
+
+**View and Monitor:**
+
+```bash
+# List services
+docker compose ps
+
+# List all containers (including stopped)
+docker compose ps -a
+
+# View logs
+docker compose logs
+docker compose logs -f           # Follow logs
+docker compose logs -f web       # Specific service
+docker compose logs --tail=100   # Last 100 lines
+```
+
+**Service Management:**
+
+```bash
+# Restart services
+docker compose restart
+docker compose restart web       # Specific service
+
+# Pause services
+docker compose pause
+docker compose unpause
+
+# Stop specific service
+docker compose stop web
+```
+
+**Build and Rebuild:**
+
+```bash
+# Build images
+docker compose build
+
+# Build without cache
+docker compose build --no-cache
+
+# Build specific service
+docker compose build web
+
+# Pull latest images
+docker compose pull
+```
+
+**Execute Commands:**
+
+```bash
+# Execute command in running service
+docker compose exec web sh
+docker compose exec db psql -U postgres
+
+# Run one-off command
+docker compose run web npm install
+docker compose run --rm web python manage.py migrate
+```
+
+**Scale Services:**
+
+```bash
+# Scale service to multiple instances
+docker compose up -d --scale web=3
+
+# Scale multiple services
+docker compose up -d --scale web=3 --scale worker=5
+```
+
+**Other Useful Commands:**
+
+```bash
+# Validate compose file
+docker compose config
+
+# View compose file with variables resolved
+docker compose config --services
+
+# List images
+docker compose images
+
+# Remove stopped containers
+docker compose rm
+
+# Top processes
+docker compose top
+```
+
+---
+
+### 14.5 Multi-Container Application Example
+
+**Complete full-stack application:**
+
+**Project Structure:**
+
+```
+my-fullstack-app/
+├── docker-compose.yml
+├── frontend/
+│   ├── Dockerfile
+│   ├── package.json
+│   └── src/
+├── backend/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── app/
+└── nginx/
+    └── nginx.conf
+```
+
+**docker-compose.yml:**
+
+```yaml
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  database:
+    image: postgres:14-alpine
+    container_name: myapp-db
+    environment:
+      POSTGRES_DB: myapp
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: secret123
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  cache:
+    image: redis:7-alpine
+    container_name: myapp-cache
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Backend API
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: myapp-api
+    environment:
+      DATABASE_URL: postgresql://admin:secret123@database:5432/myapp
+      REDIS_URL: redis://cache:6379
+      SECRET_KEY: your-secret-key
+    depends_on:
+      database:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - frontend
+      - backend
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: myapp-frontend
+    environment:
+      API_URL: http://api:8080
+    volumes:
+      - ./frontend/src:/app/src
+      - /app/node_modules
+    networks:
+      - frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: myapp-nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    networks:
+      - frontend
+    depends_on:
+      - frontend
+      - api
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  frontend:
+  backend:
+```
+
+**Backend Dockerfile:**
+
+```dockerfile
+# backend/Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8080
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "4", "app:app"]
+```
+
+**Frontend Dockerfile:**
+
+```dockerfile
+# frontend/Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+```
+
+**Nginx Configuration:**
+
+```nginx
+# nginx/nginx.conf
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream frontend {
+        server frontend:3000;
+    }
+
+    upstream api {
+        server api:8080;
+    }
+
+    server {
+        listen 80;
+
+        location / {
+            proxy_pass http://frontend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+
+        location /api {
+            proxy_pass http://api;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+}
+```
+
+**Start Application:**
+
+```bash
+# Build and start
+docker compose up -d --build
+
+# View logs
+docker compose logs -f
+
+# Check status
+docker compose ps
+
+# Access:
+# Frontend: http://localhost
+# API: http://localhost/api
+```
+
+**Development Commands:**
+
+```bash
+# Rebuild specific service
+docker compose up -d --build api
+
+# View API logs
+docker compose logs -f api
+
+# Access database
+docker compose exec database psql -U admin -d myapp
+
+# Access Redis
+docker compose exec cache redis-cli
+
+# Run migrations
+docker compose exec api python manage.py migrate
+
+# Install npm packages
+docker compose exec frontend npm install package-name
+
+# Restart service
+docker compose restart api
+
+# Stop everything
+docker compose down
+
+# Stop and remove volumes (clean start)
+docker compose down -v
+```
+
+---
+
+### 14.6 Environment Variables in Compose
+
+**Environment variables ka proper use:**
+
+**Method 1: Inline in docker-compose.yml**  
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx:alpine
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DEBUG=false
+```
+
+**Method 2: Using .env File (Recommended)**  
+
+```bash
+# .env file (in same directory as docker-compose.yml)
+NODE_ENV=production
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=myapp
+DB_USER=admin
+DB_PASSWORD=secret123
+API_KEY=your-api-key-here
+SECRET_KEY=your-secret-key
+```
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  api:
+    image: myapi:latest
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+```
+
+**Method 3: External env_file**  
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: myapp:latest
+    env_file:
+      - ./config/.env.production
+      - ./config/.env.local
+
+  api:
+    image: myapi:latest
+    env_file:
+      - ./config/api.env
+```
+
+**Multiple Environment Files:**
+
+```bash
+# .env.development
+NODE_ENV=development
+DEBUG=true
+LOG_LEVEL=debug
+DB_HOST=localhost
+
+# .env.production
+NODE_ENV=production
+DEBUG=false
+LOG_LEVEL=error
+DB_HOST=prod-db.example.com
+```
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    image: myapp:latest
+    env_file:
+      - .env.${ENV:-development}
+    environment:
+      - APP_VERSION=1.0.0
+```
+
+**Start with specific environment:**
+
+```bash
+# Development
+ENV=development docker compose up -d
+
+# Production
+ENV=production docker compose up -d
+```
+
+**Override with Command Line:**
+
+```bash
+# Override specific variables
+docker compose up -d -e DB_HOST=custom-host -e DB_PORT=3306
+
+# Use different env file
+docker compose --env-file .env.staging up -d
+```
+
+**Variable Substitution:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx:${NGINX_VERSION:-alpine}
+    ports:
+      - "${WEB_PORT:-80}:80"
+    environment:
+      - API_URL=http://api:${API_PORT:-8080}
+```
+
+**Best Practices:**
+
+```yaml
+# ✅ Good - Use defaults
+environment:
+  - PORT=${PORT:-3000}
+  - NODE_ENV=${NODE_ENV:-development}
+
+# ✅ Good - Keep secrets in .env (gitignored)
+# .gitignore should include:
+# .env
+# .env.local
+# .env.*.local
+
+# ❌ Bad - Hardcoded secrets
+environment:
+  - DB_PASSWORD=secret123  # Don't do this!
+```
+
+**Complete Example:**
+
+```bash
+# .env
+POSTGRES_VERSION=14-alpine
+POSTGRES_DB=myapp
+POSTGRES_USER=admin
+POSTGRES_PASSWORD=secret123
+API_PORT=8080
+FRONTEND_PORT=3000
+NGINX_PORT=80
+```
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:${POSTGRES_VERSION}
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: ./backend
+    ports:
+      - "${API_PORT}:8080"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/${POSTGRES_DB}
+      - NODE_ENV=production
+    depends_on:
+      - database
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${FRONTEND_PORT}:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:${API_PORT}
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${NGINX_PORT}:80"
+    depends_on:
+      - frontend
+      - api
+
+volumes:
+  pgdata:
+```
+
+---
+
+### 14.7 Depends On and Service Dependencies
+
+**Service dependencies ko manage karo:**
+
+**Basic depends_on:**
+
+```yaml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:14
+
+  api:
+    image: myapi:latest
+    depends_on:
+      - database
+    # api starts AFTER database
+
+  frontend:
+    image: myfrontend:latest
+    depends_on:
+      - api
+    # frontend starts AFTER api
+```
+
+**Startup Order:**
+
+```
+1. database starts first
+2. api starts after database
+3. frontend starts after api
+```
+
+**⚠️ Important Note:**
+`depends_on` only waits for container to START, not for it to be READY!
+
+**Health Check with depends_on:**
+
+```yaml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:14
+    environment:
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: myapi:latest
+    depends_on:
+      database:
+        condition: service_healthy
+    # api starts AFTER database is healthy!
+```
+
+**Health Check Conditions:**
+
+```yaml
+depends_on:
+  service-name:
+    condition: service_started    # Default: just started
+    condition: service_healthy    # Wait for health check
+    condition: service_completed_successfully  # For one-off tasks
+```
+
+**Complex Dependencies:**
+
+```yaml
+version: '3.8'
+
+services:
+  # Database
+  postgres:
+    image: postgres:14
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Cache
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Message Queue
+  rabbitmq:
+    image: rabbitmq:3-management
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API depends on all infrastructure
+  api:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - DB_HOST=postgres
+      - REDIS_HOST=redis
+      - RABBITMQ_HOST=rabbitmq
+
+  # Worker depends on same infrastructure
+  worker:
+    build: ./backend
+    command: celery worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Frontend depends on API
+  frontend:
+    build: ./frontend
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "3000:3000"
+```
+
+**Wait-for Scripts (Alternative):**
+
+For services without health checks, use wait-for scripts:
+
+```dockerfile
+# Dockerfile
+FROM node:18-alpine
+
+# Install wait-for-it
+RUN apk add --no-cache bash
+ADD https://raw.githubusercontent.com/vishnubob/wait-for-it/master/wait-for-it.sh /wait-for-it.sh
+RUN chmod +x /wait-for-it.sh
+
+WORKDIR /app
+COPY . .
+
+CMD ["/wait-for-it.sh", "database:5432", "--", "node", "server.js"]
+```
+
+```yaml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:14
+
+  api:
+    build: ./backend
+    command: sh -c '/wait-for-it.sh database:5432 -- node server.js'
+    depends_on:
+      - database
+```
+
+**Custom Wait Script:**
+
+```bash
+#!/bin/bash
+# wait-for-postgres.sh
+
+set -e
+
+host="$1"
+shift
+cmd="$@"
+
+until PGPASSWORD=$POSTGRES_PASSWORD psql -h "$host" -U "$POSTGRES_USER" -c '\q'; do
+  >&2 echo "Postgres is unavailable - sleeping"
+  sleep 1
+done
+
+>&2 echo "Postgres is up - executing command"
+exec $cmd
+```
+
+```yaml
+services:
+  database:
+    image: postgres:14
+    environment:
+      POSTGRES_PASSWORD: secret
+
+  api:
+    build: ./backend
+    command: ["./wait-for-postgres.sh", "database", "node", "server.js"]
+    depends_on:
+      - database
+    environment:
+      POSTGRES_PASSWORD: secret
+      POSTGRES_USER: postgres
+```
+
+**Real-world Example with Multiple Dependencies:**
+
+```yaml
+version: '3.8'
+
+services:
+  # Infrastructure
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+  # Application
+  backend:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:secret@postgres:5432/myapp
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      API_URL: http://backend:8080
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    depends_on:
+      - frontend
+      - backend
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redis-data:
+```
+
+---
+
+### 14.8 Docker Compose Networking
+
+**Networks in Compose:**
+
+**Default Network:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx
+  
+  api:
+    image: myapi:latest
+
+  db:
+    image: postgres:14
+
+# Docker Compose automatically creates a default network
+# All services can communicate using service names
+# web can access: http://api:8080
+# api can access: postgresql://db:5432
+```
+
+**Custom Networks:**
+
+```yaml
+version: '3.8'
+
+services:
+  frontend:
+    image: nginx
+    networks:
+      - frontend-net
+
+  api:
+    image: myapi:latest
+    networks:
+      - frontend-net
+      - backend-net
+
+  database:
+    image: postgres:14
+    networks:
+      - backend-net
+
+  cache:
+    image: redis:alpine
+    networks:
+      - backend-net
+
+networks:
+  frontend-net:
+  backend-net:
+
+# frontend ↔ api (frontend-net)
+# api ↔ database (backend-net)
+# api ↔ cache (backend-net)
+# frontend CANNOT access database (isolated)
+```
+
+**Network Configuration:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx
+    networks:
+      app-network:
+        ipv4_address: 172.20.0.10
+
+networks:
+  app-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+```
+
+**Network Aliases:**
+
+```yaml
+version: '3.8'
+
+services:
+  api:
+    image: myapi:latest
+    networks:
+      app-net:
+        aliases:
+          - backend
+          - api-server
+
+  # Other services can access via:
+  # http://api:8080
+  # http://backend:8080
+  # http://api-server:8080
+
+networks:
+  app-net:
+```
+
+**External Networks:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx
+    networks:
+      - existing-network
+
+networks:
+  existing-network:
+    external: true
+    name: my-pre-existing-network
+```
+
+**Complete Networking Example:**
+
+```yaml
+version: '3.8'
+
+services:
+  # Public-facing services
+  nginx:
+    image: nginx:alpine
+    networks:
+      - public
+    ports:
+      - "80:80"
+      - "443:443"
+
+  frontend:
+    build: ./frontend
+    networks:
+      - public
+      - internal
+
+  # Internal services
+  api:
+    build: ./backend
+    networks:
+      - internal
+      - database-net
+    environment:
+      - DB_HOST=postgres
+
+  # Database tier
+  postgres:
+    image: postgres:14
+    networks:
+      - database-net
+    environment:
+      - POSTGRES_PASSWORD=secret
+
+  redis:
+    image: redis:alpine
+    networks:
+      - database-net
+
+networks:
+  public:
+    driver: bridge
+  internal:
+    driver: bridge
+    internal: true  # No external access
+  database-net:
+    driver: bridge
+    internal: true  # Isolated database network
+```
+
+**Network Communication Flow:**
+
+```
+Internet
+   ↓
+nginx (public network)
+   ↓
+frontend (public + internal)
+   ↓
+api (internal + database-net)
+   ↓
+postgres/redis (database-net only)
+```
+
+---
+
+### 14.9 Docker Compose Volumes
+
+**Volumes in Compose:**
+
+**Named Volumes:**
+
+```yaml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:14
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:alpine
+    volumes:
+      - redis-data:/data
+
+volumes:
+  postgres-data:
+  redis-data:
+```
+
+**Volume Configuration:**
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    image: myapp:latest
+    volumes:
+      - app-data:/app/data
+
+volumes:
+  app-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /path/on/host
+
+  logs:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=10.0.0.1,rw
+      device: ":/path/on/nfs"
+```
+
+**Bind Mounts:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx
+    volumes:
+      - ./html:/usr/share/nginx/html
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+
+  api:
+    build: ./backend
+    volumes:
+      - ./backend:/app
+      - /app/node_modules  # Anonymous volume
+      - ./logs:/app/logs
+```
+
+**Read-only Volumes:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx
+    volumes:
+      - ./config:/etc/nginx:ro  # Read-only
+      - ./html:/usr/share/nginx/html  # Read-write
+```
+
+**Volume from another container:**
+
+```yaml
+version: '3.8'
+
+services:
+  data-container:
+    image: alpine
+    volumes:
+      - shared-data:/data
+
+  app1:
+    image: myapp:latest
+    volumes_from:
+      - data-container
+
+  app2:
+    image: myapp:latest
+    volumes_from:
+      - data-container
+
+volumes:
+  shared-data:
+```
+
+**Tmpfs Mounts (Memory):**
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    image: myapp:latest
+    tmpfs:
+      - /tmp
+      - /run
+
+  # Or with options
+  cache:
+    image: redis:alpine
+    tmpfs:
+      - type: tmpfs
+        target: /cache
+        tmpfs:
+          size: 1000000000  # 1GB
+```
+
+**Complete Volumes Example:**
+
+```yaml
+version: '3.8'
+
+services:
+  # Database with persistent storage
+  postgres:
+    image: postgres:14
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-scripts:/docker-entrypoint-initdb.d:ro
+    environment:
+      POSTGRES_PASSWORD: secret
+
+  # Application with code and logs
+  api:
+    build: ./backend
+    volumes:
+      # Source code (development)
+      - ./backend:/app
+      # Node modules (don't overwrite)
+      - /app/node_modules
+      # Logs
+      - app-logs:/app/logs
+      # Config (read-only)
+      - ./config:/app/config:ro
+    depends_on:
+      - postgres
+
+  # File uploads storage
+  storage:
+    image: myapp:latest
+    volumes:
+      - uploads:/app/uploads
+      - ./static:/app/static:ro
+
+  # Nginx with config
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx-cache:/var/cache/nginx
+      - nginx-logs:/var/log/nginx
+    ports:
+      - "80:80"
+      - "443:443"
+
+volumes:
+  postgres-data:
+    driver: local
+  app-logs:
+  uploads:
+  nginx-cache:
+  nginx-logs:
+```
+
+**External Volumes:**
+
+```yaml
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14
+    volumes:
+      - existing-data:/var/lib/postgresql/data
+
+volumes:
+  existing-data:
+    external: true
+    name: my-existing-volume
+```
+
+**Volume Labels:**
+
+```yaml
+version: '3.8'
+
+volumes:
+  postgres-data:
+    labels:
+      com.example.description: "PostgreSQL database data"
+      com.example.department: "backend"
+      com.example.environment: "production"
+```
+
+---
+
+## Chapter 15: Advanced Topics
+
+### 15.1 Docker Security Best Practices
+
+**Security ko seriously lo!**
+
+**1. Use Official Images:**
+
+```dockerfile
+# ✅ Good - Official image
+FROM node:18-alpine
+
+# ❌ Bad - Random image
+FROM some-random-user/node
+```
+
+**2. Don't Run as Root:**
+
+```dockerfile
+# Create non-root user
+FROM node:18-alpine
+
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+COPY --chown=nodejs:nodejs . .
+
+USER nodejs
+
+CMD ["node", "server.js"]
+```
+
+**3. Scan Images for Vulnerabilities:**
+
+```bash
+# Docker Scout (built-in)
+docker scout cves myapp:latest
+
+# Trivy scanner
+docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  aquasec/trivy image myapp:latest
+
+# Snyk
+docker scan myapp:latest
+```
+
+**4. Use .dockerignore:**
+
+```
+# .dockerignore
+.git
+.env
+*.log
+node_modules
+secrets/
+*.key
+*.pem
+.ssh
+```
+
+**5. Minimize Image Layers:**
+
+```dockerfile
+# ❌ Bad - Many layers
+RUN apt-get update
+RUN apt-get install -y python3
+RUN apt-get install -y pip
+RUN apt-get clean
+
+# ✅ Good - Single layer
+RUN apt-get update && \
+    apt-get install -y python3 pip && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+```
+
+**6. Use Multi-stage Builds:**
+
+```dockerfile
+# Build stage - has build tools
+FROM node:18 AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+# Runtime stage - minimal
+FROM node:18-alpine
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+USER node
+CMD ["node", "dist/server.js"]
+```
+
+**7. Set Resource Limits:**
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    image: myapp:latest
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+        reservations:
+          cpus: '1'
+          memory: 512M
+```
+
+```bash
+# Command line
+docker run -d \
+  --memory="512m" \
+  --cpus="1.5" \
+  --pids-limit=100 \
+  myapp:latest
+```
+
+**8. Use Read-only Filesystem:**
+
+```yaml
+services:
+  app:
+    image: myapp:latest
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+```
+
+**9. Drop Capabilities:**
+
+```yaml
+services:
+  app:
+    image: myapp:latest
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+```
+
+**10. Use Secrets Management:**
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    image: myapp:latest
+    secrets:
+      - db_password
+      - api_key
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  api_key:
+    external: true
+```
+
+**11. Enable Docker Content Trust:**
+
+```bash
+# Enable content trust
+export DOCKER_CONTENT_TRUST=1
+
+# Only signed images can be pulled/run
+docker pull nginx:latest
+```
+
+**12. Network Isolation:**
+
+```yaml
+version: '3.8'
+
+services:
+  frontend:
+    networks:
+      - public
+
+  api:
+    networks:
+      - public
+      - backend
+
+  database:
+    networks:
+      - backend
+
+networks:
+  public:
+  backend:
+    internal: true  # No external access
+```
+
+**13. Update Regularly:**
+
+```bash
+# Pull latest images
+docker compose pull
+
+# Rebuild with latest
+docker compose build --pull
+
+# Update base images in Dockerfile
+FROM node:18-alpine  # Keep updated
+```
+
+**Security Checklist:**
+
+```bash
+# ✅ Security checklist
+[ ] Use official base images
+[ ] Run as non-root user
+[ ] Scan for vulnerabilities
+[ ] Use .dockerignore
+[ ] Multi-stage builds
+[ ] Set resource limits
+[ ] Read-only filesystem where possible
+[ ] Drop unnecessary capabilities
+[ ] Use secrets for sensitive data
+[ ] Keep images updated
+[ ] Network isolation
+[ ] Enable content trust
+[ ] Minimal image size
+[ ] No secrets in images
+[ ] Health checks configured
+```
+
+---
+
+### 15.2 Docker Logging
+
+**Logging best practices:**
+
+**Default Logging:**
+
+```bash
+# View logs
+docker logs container-name
+
+# Follow logs
+docker logs -f container-name
+
+# Last 100 lines
+docker logs --tail 100 container-name
+
+# Since timestamp
+docker logs --since 2024-01-01T00:00:00 container-name
+
+# With timestamps
+docker logs -t container-name
+```
+
+**Log Drivers:**
+
+```bash
+# JSON file (default)
+docker run -d \
+  --log-driver json-file \
+  --log-opt max-size=10m \
+  --log-opt max-file=3 \
+  nginx
+
+# Syslog
+docker run -d \
+  --log-driver syslog \
+  --log-opt syslog-address=tcp://192.168.1.100:514 \
+  nginx
+
+# Journald (systemd)
+docker run -d \
+  --log-driver journald \
+  nginx
+
+# None (disable logging)
+docker run -d --log-driver none nginx
+```
+
+**Docker Compose Logging:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: nginx
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+        labels: "production,web"
+
+  api:
+    image: myapi:latest
+    logging:
+      driver: syslog
+      options:
+        syslog-address: "tcp://192.168.1.100:514"
+        tag: "api"
+
+  worker:
+    image: worker:latest
+    logging:
+      driver: none  # No logs for this service
+```
+
+**Centralized Logging with ELK Stack:**
+
+```yaml
+version: '3.8'
+
+services:
+  # Elasticsearch
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.0
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - elk
+
+  # Logstash
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.10.0
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline
+    depends_on:
+      - elasticsearch
+    networks:
+      - elk
+
+  # Kibana
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.10.0
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - elk
+
+  # Your application
+  app:
+    image: myapp:latest
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+    depends_on:
+      - logstash
+    networks:
+      - elk
+
+volumes:
+  es-data:
+
+networks:
+  elk:
+```
+
+**Application-level Logging:**
+
+```javascript
+// Node.js with Winston
+const winston = require('winston');
+
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.json(),
+  transports: [
+    new winston.transports.Console({
+      format: winston.format.simple()
+    })
+  ]
+});
+
+logger.info('Application started');
+logger.error('Something went wrong', { error: err });
+```
+
+```python
+# Python with logging
+import logging
+import sys
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger(__name__)
+logger.info('Application started')
+logger.error('Something went wrong', exc_info=True)
+```
+
+**Log Rotation Script:**
+
+```bash
+#!/bin/bash
+# rotate-logs.sh
+
+# Find all Docker log files older than 7 days and compress them
+find /var/lib/docker/containers -name "*.log" -mtime +7 -exec gzip {} \;
+
+# Remove compressed logs older than 30 days
+find /var/lib/docker/containers -name "*.log.gz" -mtime +30 -delete
+
+echo "Log rotation completed: $(date)"
+```
+
+---
+
+### 15.3 Health Checks
+
+**Container health monitoring:**
+
+**Dockerfile Health Check:**
+
+```dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+COPY . .
+
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD node healthcheck.js || exit 1
+
+CMD ["node", "server.js"]
+```
+
+**healthcheck.js:**
+
+```javascript
+// healthcheck.js
+const http = require('http');
+
+const options = {
+  hostname: 'localhost',
+  port: 3000,
+  path: '/health',
+  method: 'GET',
+  timeout: 2000
+};
+
+const req = http.request(options, (res) => {
+  if (res.statusCode === 200) {
+    process.exit(0);
+  } else {
+    process.exit(1);
+  }
+});
+
+req.on('error', () => {
+  process.exit(1);
+});
+
+req.on('timeout', () => {
+  req.destroy();
+  process.exit(1);
+});
+
+req.end();
+```
+
+**Docker Compose Health Checks:**
+
+```yaml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:14
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  api:
+    build: ./backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+```
+
+**Health Check Endpoint (Express.js):**
+
+```javascript
+// Health check route
+app.get('/health', async (req, res) => {
+  try {
+    // Check database connection
+    await db.query('SELECT 1');
+    
+    // Check Redis connection
+    await redis.ping();
+    
+    res.status(200).json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      database: 'connected',
+      cache: 'connected'
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: 'unhealthy',
+      error: error.message
+    });
+  }
+});
+```
+
+**Check Container Health:**
+
+```bash
+# View health status
+docker ps
+
+# Detailed health info
+docker inspect --format='{{json .State.Health}}' container-name | jq
+
+# Health status only
+docker inspect --format='{{.State.Health.Status}}' container-name
+```
+
+**Health Check Commands:**
+
+```yaml
+# HTTP endpoint
+healthcheck:
+  test: ["CMD", "curl", "-f", "http://localhost/health"]
+
+# PostgreSQL
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+
+# MySQL
+healthcheck:
+  test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+
+# MongoDB
+healthcheck:
+  test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+
+# Redis
+healthcheck:
+  test: ["CMD", "redis-cli", "ping"]
+
+# Custom script
+healthcheck:
+  test: ["CMD", "/app/healthcheck.sh"]
+```
+
+---
+
+### 15.4 Docker Secrets
+
+**Sensitive data ko securely manage karo:**
+
+**Docker Swarm Secrets:**
+
+```bash
+# Initialize Swarm
+docker swarm init
+
+# Create secret from file
+echo "mysecretpassword" | docker secret create db_password -
+
+# Create from file
+docker secret create db_config ./config.json
+
+# List secrets
+docker secret ls
+
+# Inspect secret (value not shown)
+docker secret inspect db_password
+```
+
+**Use Secrets in Service:**
+
+```bash
+# Create service with secrets
+docker service create \
+  --name myapp \
+  --secret db_password \
+  --secret api_key \
+  myapp:latest
+```
+
+**Access Secrets in Container:**
+
+```bash
+# Secrets mounted at /run/secrets/
+cat /run/secrets/db_password
+cat /run/secrets/api_key
+```
+
+**Docker Compose with Secrets:**
+
+```yaml
+version: '3.8'
+
+services:
+  database:
+    image: postgres:14
+    secrets:
+      - db_password
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+
+  api:
+    image: myapi:latest
+    secrets:
+      - db_password
+      - api_key
+    environment:
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      API_KEY_FILE: /run/secrets/api_key
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  api_key:
+    file: ./secrets/api_key.txt
+```
+
+**Read Secrets in Application:**
+
+```javascript
+// Node.js
+const fs = require('fs');
+
+const dbPassword = fs.readFileSync('/run/secrets/db_password', 'utf8').trim();
+const apiKey = fs.readFileSync('/run/secrets/api_key', 'utf8').trim();
+
+console.log('Secrets loaded successfully');
+```
+
+```python
+# Python
+def read_secret(secret_name):
+    try:
+        with open(f'/run/secrets/{secret_name}', 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
+
+db_password = read_secret('db_password')
+api_key = read_secret('api_key')
+```
+
+**External Secrets:**
+
+```yaml
+version: '3.8'
+
+services:
+  app:
+    image: myapp:latest
+    secrets:
+      - production_key
+
+secrets:
+  production_key:
+    external: true
+```
+
+**Environment Variables vs Secrets:**
+
+```yaml
+# ❌ Bad - Secrets in env vars
+services:
+  app:
+    environment:
+      - DB_PASSWORD=mysecretpassword  # Visible in docker inspect!
+
+# ✅ Good - Use secrets
+services:
+  app:
+    secrets:
+      - db_password
+    environment:
+      - DB_PASSWORD_FILE=/run/secrets/db_password
+```
+
+---
+
+### 15.5 Production Deployment Strategies
+
+**Production me deploy karne ke best practices:**
+
+**1. Use Docker Swarm or Kubernetes:**
+
+**Docker Swarm:**
+
+```bash
+# Initialize Swarm
+docker swarm init
+
+# Add workers
+docker swarm join --token <token> <manager-ip>:2377
+
+# Deploy stack
+docker stack deploy -c docker-compose.yml myapp
+
+# Scale service
+docker service scale myapp_web=5
+
+# Update service
+docker service update --image myapp:v2 myapp_web
+
+# Rolling update
+docker service update \
+  --update-parallelism 2 \
+  --update-delay 10s \
+  --image myapp:v2 \
+  myapp_web
+```
+
+**docker-compose.yml for Swarm:**
+
+```yaml
+version: '3.8'
+
+services:
+  web:
+    image: myapp:latest
+    deploy:
+      replicas: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    ports:
+      - "80:80"
+    networks:
+      - app-network
+    secrets:
+      - db_password
+
+  database:
+    image: postgres:14
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+    secrets:
+      - db_password
+
+secrets:
+  db_password:
+    external: true
+
+networks:
+  app-network:
+    driver: overlay
+
+volumes:
+  pgdata:
+```
+
+**2. CI/CD Pipeline:**
+
+**GitHub Actions Example:**
+
+```yaml
+# .github/workflows/deploy.yml
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            username/myapp:latest
+            username/myapp:${{ github.sha }}
+      
+      - name: Deploy to production
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /app
+            docker compose pull
+            docker compose up -d
+            docker system prune -f
+```
+
+**3. Blue-Green Deployment:**
+
+```bash
+# Current production (blue)
+docker compose -f docker-compose.blue.yml up -d
+
+# Deploy new version (green)
+docker compose -f docker-compose.green.yml up -d
+
+# Test green environment
+curl http://green.example.com/health
+
+# Switch traffic to green
+# Update load balancer or DNS
+
+# Remove blue environment
+docker compose -f docker-compose.blue.yml down
+```
+
+**4. Monitoring and Logging:**
+
+```yaml
+version: '3.8'
+
+services:
+  # Application
+  app:
+    image: myapp:latest
+    deploy:
+      replicas: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Prometheus monitoring
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  # Grafana dashboards
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+
+  # Log aggregation
+  loki:
+    image: grafana/loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki-data:/loki
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+```
+
+**5. Backup Strategy:**
+
+```bash
+#!/bin/bash
+# production-backup.sh
+
+BACKUP_DIR="/backups/$(date +%Y%m%d)"
+mkdir -p $BACKUP_DIR
+
+echo "🗄️  Backing up databases..."
+docker exec postgres pg_dump -U postgres myapp > $BACKUP_DIR/database.sql
+
+echo "📦 Backing up volumes..."
+docker run --rm \
+  -v pgdata:/data \
+  -v $BACKUP_DIR:/backup \
+  alpine \
+  tar czf /backup/pgdata.tar.gz -C /data .
+
+echo "💾 Backing up configs..."
+cp -r /app/config $BACKUP_DIR/
+
+echo "☁️  Uploading to S3..."
+aws s3 sync $BACKUP_DIR s3://myapp-backups/$(date +%Y%m%d)/
+
+echo "✅ Backup completed!"
+```
+
+**6. Health Monitoring Script:**
+
+```bash
+#!/bin/bash
+# monitor-production.sh
+
+SERVICES="web api database redis"
+WEBHOOK_URL="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+for SERVICE in $SERVICES; do
+    HEALTH=$(docker inspect --format='{{.State.Health.Status}}' $SERVICE 2>/dev/null)
+    
+    if [ "$HEALTH" != "healthy" ]; then
+        MESSAGE="🚨 Alert: Service $SERVICE is $HEALTH"
+        curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"$MESSAGE\"}" \
+            $WEBHOOK_URL
+    fi
+done
+```
+
+**7. Production Checklist:**
+
+```bash
+# ✅ Production deployment checklist
+
+[ ] Use specific image tags (not :latest)
+[ ] Configure health checks
+[ ] Set resource limits
+[ ] Enable auto-restart policies
+[ ] Use secrets for sensitive data
+[ ] Configure logging
+[ ] Set up monitoring
+[ ] Configure backups
+[ ] Use HTTPS/SSL
+[ ] Configure firewall rules
+[ ] Set up alerting
+[ ] Document rollback procedure
+[ ] Test disaster recovery
+[ ] Performance testing completed
+[ ] Security scan passed
+```
